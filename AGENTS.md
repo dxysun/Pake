@@ -1,41 +1,19 @@
 # AGENTS.md - Pake Project Knowledge Base
 
-> Project-specific Rust + Tauri rules: `.claude/rules/rust.md`. Release runbook: `.agents/skills/release/SKILL.md` (run `/release`; `.claude/skills/*` are symlinks into `.agents/skills/`, edit the `.agents` copy only).
+> Skills: `.agents/skills/{release,code-review,github-ops,use-pake}/SKILL.md` (`.claude/skills/*` are symlinks into `.agents/skills/`, edit the `.agents` copy only). Rust rules: `.claude/rules/rust.md`.
 
 ## Project Identity
 
-**Pake** - Turn any webpage into a lightweight desktop app with one command.
-
-- **Purpose**: Package any website into a ~5MB desktop app (20x smaller than Electron)
-- **Stack**: Tauri v2 (Rust) + TypeScript CLI
-- **Platforms**: macOS, Windows, Linux
-- **Mechanism**: Uses system webview (WebKit on macOS/Linux, WebView2 on Windows)
+**Pake** - Package any website into a ~5MB desktop app (20x smaller than Electron) using the system webview (WebKit on macOS/Linux, WebView2 on Windows). Stack: Tauri v2 (Rust) + TypeScript CLI. Platforms: macOS, Windows, Linux.
 
 ## Repository Structure
 
-```
-Pake/
-├── bin/                   # CLI source code (TypeScript)
-│   └── cli.ts            # Main CLI entry (Commander.js)
-├── src-tauri/             # Tauri Rust application
-│   ├── src/              # Rust source code
-│   ├── src/app/          # window creation, setup, menu, config, and invokes
-│   ├── src/inject/       # injected JS/CSS behavior
-│   ├── Cargo.toml        # Rust dependencies and version
-│   ├── tauri.conf.json   # Tauri configuration and version
-│   └── .cargo/           # Cargo configuration (gitignored)
-├── dist/                 # Compiled CLI output
-├── docs/                 # Documentation
-│   ├── cli-usage.md      # CLI parameters
-│   ├── advanced-usage.md # Customization guide
-│   └── faq.md           # Troubleshooting
-├── scripts/              # Utility scripts
-├── tests/                # Unit, integration, and release-flow tests
-├── .github/workflows/     # quality/test and release automation
-├── default_app_list.json # Popular apps config for release builds
-├── package.json          # Node.js dependencies and version
-└── rollup.config.js      # CLI build configuration
-```
+- `bin/` - CLI source (TypeScript, Commander.js). Entry: `cli.ts`. Options split across `helpers/cli-program.ts`, `types.ts`, `defaults.ts`, `helpers/merge.ts`. Builders in `builders/` (BaseBuilder, Mac/Linux/Win + Provider). Utils in `utils/`.
+- `src-tauri/` - Tauri Rust app. `src/app/` (window, setup, menu, config, invokes), `src/inject/` (injected JS/CSS), `src/lib.rs` (runtime flags).
+- `dist/cli.js` - Tracked CLI build artifact (see `package.json` `files`). `dist/` is gitignored except this file.
+- `tests/` - `unit/` and `integration/` run via Vitest; `index.js` is the full suite runner; `release.js` tests the release workflow (weread, twitter).
+- `default_app_list.json` - Popular apps config for release builds.
+- `.github/workflows/` - `release.yml`, `npm-publish.yml`, `quality-and-test.yml`, `single-app.yaml`, `pake-cli.yaml`, `update-contributors.yml`.
 
 ## Development Commands
 
@@ -47,35 +25,26 @@ Pake/
 | `pnpm run cli:dev --iterative-build` | Faster dev (skip checks)                                        |
 | `pnpm run cli:build`                 | Rollup + TypeScript check (catches type errors Prettier misses) |
 | `pnpm run build`                     | Build for current platform                                      |
-| `pnpm run build:mac`                 | macOS universal binary                                          |
+| `pnpm run build:mac`                 | macOS universal binary (`--target universal-apple-darwin`)      |
 | `pnpm run format`                    | Format code (prettier + cargo fmt)                              |
+| `pnpm run release:check`             | Pre-release: version sync, format check, vitest, cli:build, npm pack dry-run |
 | `npx vitest run`                     | Unit and integration tests only (sub-second)                    |
 | `pnpm test -- --no-build`            | Full suite minus the multi-arch real build                      |
-| `pnpm test`                          | Full suite including release workflow                           |
+| `pnpm test`                          | Full suite including real build and release workflow tests      |
 
-Keep shared project facts in this file so Codex, Claude Code, and other agents use the same source of truth. `CLAUDE.md` is a symlink to this file, so edit `AGENTS.md` only. Local-only overrides (`CLAUDE.local.md`, `AGENTS.override.md`, `.claude/settings.local.json`) stay ignored.
+`CLAUDE.md` is a symlink to this file, so edit `AGENTS.md` only. Local-only overrides (`CLAUDE.local.md`, `AGENTS.override.md`, `.claude/settings.local.json`) stay ignored.
 
 ## Code Conventions
 
 - No Chinese comments in any source (Rust / TypeScript / any file). Comments and identifiers in English; follow the existing language of surrounding prose.
 
-## Task Intake And Investigation
-
-Prefer requests with:
-
-- `Goal`: exact bug, feature, refactor, or review target
-- `Scope`: files, directories, or subsystem boundaries to inspect first
-- `Repro`: command, input, fixture, or failing test
-- `Expected`: expected behavior
-- `Actual`: current behavior, error text, or regression note
-- `Constraints`: what must not change
-- `Verify`: minimum command or test that proves the result
+## Investigation Order
 
 When task scope is incomplete, inspect in this order:
 
-1. CLI entry and option parsing under `bin/cli.ts`, `bin/options/`, and `bin/helpers/`
+1. CLI entry and option parsing: `bin/cli.ts`, `bin/options/`, `bin/helpers/`
 2. Target TypeScript module under `bin/`
-3. Tauri runtime or packaging files under `src-tauri/src/` and `src-tauri/tauri*.conf.json`
+3. Tauri runtime or packaging: `src-tauri/src/` and `src-tauri/tauri*.conf.json`
 4. Narrow tests under `tests/unit/` or `tests/integration/`
 5. Release workflow files under `.github/workflows/` only for CI or release issues
 6. Docs only if behavior, ownership, or expected usage is still unclear
@@ -84,8 +53,8 @@ Execution rules:
 
 - Start with the smallest plausible file set
 - Prefer targeted search (`rg <symbol|string> <paths>`) over repository-wide scans
-- Ignore generated or output-heavy areas unless the task directly targets them, especially `dist/`, `node_modules/`, `src-tauri/target/`, `.app/`, `src-tauri/icons/`, and `src-tauri/png/`. Exception: `dist/cli.js` is the shipped CLI build artifact (see `package.json` `files`); when you change anything under `bin/`, rebuild it via `pnpm run cli:build` and commit the regenerated `dist/cli.js` alongside the source change
-- If a task touches release status, issue closeout, npm delivery, or GitHub assets, verify live surfaces separately: source commit/tag, workflow run, npm registry, GitHub Release/assets, and issue state. Do not let one passing surface imply another
+- Ignore generated or output-heavy areas unless the task directly targets them: `dist/` (except `dist/cli.js`), `node_modules/`, `src-tauri/target/`, `.app/`, `src-tauri/icons/`, `src-tauri/png/`. When you change anything under `bin/`, rebuild via `pnpm run cli:build` and commit the regenerated `dist/cli.js` (`git add -f dist/cli.js` since `dist/` is gitignored).
+- If a task touches release status, issue closeout, npm delivery, or GitHub assets, verify live surfaces separately: source commit/tag, workflow run, npm registry, GitHub Release/assets, and issue state. Do not let one passing surface imply another.
 - Keep changes local to one subsystem when possible
 - Run the narrowest relevant verification first, expand only if needed
 - If key context is missing, make one reasonable assumption and proceed
@@ -106,27 +75,6 @@ Execution rules:
 - Local app builds and test runs mutate tracked files as build state: `src-tauri/pake.json`, `src-tauri/tauri.conf.json`, `src-tauri/tauri.macos.conf.json`, and regenerated icons under `src-tauri/png/` and `src-tauri/icons/`. Before committing, `git restore` whatever you did not intentionally change; never let a feature or release commit absorb this churn.
 - Per-app optional fields in `default_app_list.json` consumed by workflows must get their defaults in the jq read step of `release.yml`, not in Actions expressions: GitHub expressions cast both `null` and `false` to `0`, so `matrix.config.x != false` cannot express "default true" and silently flips every app missing the field.
 
-## Platform-Specific Development
-
-### macOS
-
-- Universal builds via `--multi-arch` (Intel + Apple Silicon).
-- Icons: `.icns`.
-- Title bar can be customized via Tauri window options.
-
-### Windows
-
-- Requires Visual Studio Build Tools to compile.
-- Icons: `.ico`.
-- MSI installer supported via Tauri bundler.
-
-### Linux
-
-- Multiple package formats: `.deb`, `.AppImage`, `.rpm`.
-- Runtime depends on `libwebkit2gtk` and its companion libraries.
-- Icons: `.png`.
-- WebKit compositing is platform-sensitive on Wayland; see Current Risk Areas before changing defaults.
-
 ## Branch Strategy
 
 - `main` - Only branch. All development and releases happen here directly.
@@ -142,7 +90,7 @@ Four files must be updated in sync for every release:
 | `src-tauri/Cargo.lock`      | `version` for package `pake` |
 | `src-tauri/tauri.conf.json` | `"version"`                  |
 
-Tag format: `V<major.minor.patch>` with uppercase `V` (e.g. `V3.13.1`). Current version: check `package.json`.
+Tag format: `V<major.minor.patch>` with uppercase `V` (e.g. `V3.14.0`). Current version: check `package.json`.
 
 Find the previous release tag with `git tag --list 'V*' --sort=-version:refname | head -1`. A bare `git tag --sort` is polluted by stray non-version tags (`list`, `continuous`, `0.1.0`) and silently picks the wrong log range.
 
@@ -171,7 +119,7 @@ For release follow-through, keep these boundaries explicit:
 - For app-release claims, inspect the GitHub Release directly with `gh release view <tag> --json assets` and check asset count/state instead of trusting source state or workflow names alone.
 - The contributors bot can push `chore: update contributors [skip ci]` at any moment, including between local commits and the bump push. On a rejected push, `git pull --rebase` onto it and push again before tagging. After release, fast-forward local `main`; do not move an already pushed release tag to include it.
 
-`.github/workflows/quality-and-test.yml` runs auto-format on push, Rust quality checks, and CLI/build validation across Linux, Windows, and macOS.
+`.github/workflows/quality-and-test.yml` has two lanes: **validation-fast** (runs on every PR/push, skips real Tauri build, ~5 min per OS) and **validation-full** (runs on push to main, includes real Tauri build, 20+ min). Also runs auto-format on push and Rust quality checks (clippy via `cargo-hack --feature-powerset`, `cargo fmt --check`).
 
 ### Network Mirror Behavior
 
@@ -193,19 +141,6 @@ Sort every community PR into one of three outcomes; never rewrite a contribution
 - **Merge as-is**: implementation is sound. Verify locally (build + relevant tests), merge, thank the author.
 - **Right direction, implementation needs work**: push fixes directly onto the contributor's branch so their authorship is preserved, then merge and reply summarizing what was changed and why.
 - **Out of scope**: close as not planned with a one-line apology and the boundary reason (what Pake deliberately does not do). Keep it friendly and leave room for discussion.
-
-## CLI Usage Example
-
-```bash
-# Install CLI
-pnpm install -g pake-cli
-
-# Basic usage
-pake https://github.com --name GitHub
-
-# Advanced usage
-pake https://weekly.tw93.fun --name Weekly --width 1200 --height 800
-```
 
 ## Troubleshooting
 

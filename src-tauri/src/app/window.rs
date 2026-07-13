@@ -6,7 +6,7 @@ use crate::util::{
 use std::{
     path::PathBuf,
     str::FromStr,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use tauri::{
     webview::{DownloadEvent, NewWindowFeatures, NewWindowResponse},
@@ -38,6 +38,7 @@ pub struct MultiWindowState {
     pub pake_config: PakeConfig,
     pub tauri_config: Config,
     next_window_index: AtomicU32,
+    menu_creating_window: AtomicBool,
 }
 
 impl MultiWindowState {
@@ -46,12 +47,17 @@ impl MultiWindowState {
             pake_config,
             tauri_config,
             next_window_index: AtomicU32::new(0),
+            menu_creating_window: AtomicBool::new(false),
         }
     }
 
     fn next_window_label(&self) -> String {
         let index = self.next_window_index.fetch_add(1, Ordering::Relaxed) + 1;
         format!("pake-{index}")
+    }
+
+    pub fn is_menu_creating_window(&self) -> bool {
+        self.menu_creating_window.load(Ordering::SeqCst)
     }
 }
 
@@ -105,6 +111,22 @@ fn open_requested_window(
 }
 
 pub fn open_additional_window_safe(app: &AppHandle) {
+    // Atomically check-and-set to deduplicate concurrent calls. When Cmd+N
+    // fires, the menu accelerator and WKWebView's native new-window action
+    // can both call this function within the same event loop iteration.
+    // The first call sets the flag and proceeds; the second sees it already
+    // set and returns early. The flag is cleared after 200ms.
+    if let Some(state) = app.try_state::<MultiWindowState>() {
+        let already_creating = state
+            .menu_creating_window
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err();
+        if already_creating {
+            eprintln!("[Pake] Skipped duplicate window creation");
+            return;
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
         let app_handle = app.clone();
@@ -123,6 +145,14 @@ pub fn open_additional_window_safe(app: &AppHandle) {
             let _ = window.set_focus();
         }
     }
+
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if let Some(state) = app_clone.try_state::<MultiWindowState>() {
+            state.menu_creating_window.store(false, Ordering::SeqCst);
+        }
+    });
 }
 
 fn build_window_with_label(
@@ -265,11 +295,37 @@ fn build_window(
         window_builder = window_builder.disable_drag_drop_handler();
     }
 
-    if window_config.new_window {
+    let allow_js_new_window = window_config.new_window;
+    if allow_js_new_window || config.multi_window {
         let app_handle = app.clone();
         let popup_config = config.clone();
         let popup_tauri_config = tauri_config.clone();
         window_builder = window_builder.on_new_window(move |target_url, features| {
+            // Block WKWebView's native Cmd+N/Ctrl+N from creating duplicate
+            // windows when the menu handler is already creating one. The flag
+            // is set in open_additional_window_safe and cleared after 200ms.
+            if let Some(state) = app_handle.try_state::<MultiWindowState>() {
+                if state.is_menu_creating_window() {
+                    eprintln!("[Pake] Blocked native new-window during menu creation");
+                    return NewWindowResponse::Deny;
+                }
+            }
+
+            // Block Cmd+N / Ctrl+N from opening extra windows via WKWebView's
+            // native window.open("") -- the menu handler already creates new windows.
+            let url_str = target_url.as_str();
+            if url_str.is_empty() || url_str == "about:blank" {
+                eprintln!("[Pake] Blocked empty-URL new window (likely Cmd+N/Ctrl+N)");
+                return NewWindowResponse::Deny;
+            }
+
+            // When --multi-window is enabled but --new-window is not, only the
+            // menu should create new windows. Deny JS-initiated window.open()
+            // so websites cannot spawn additional windows.
+            if !allow_js_new_window {
+                return NewWindowResponse::Deny;
+            }
+
             match open_requested_window(
                 &app_handle,
                 &popup_config,
