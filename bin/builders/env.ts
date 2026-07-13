@@ -107,7 +107,7 @@ export async function detectPackageManager(): Promise<'pnpm' | 'npm'> {
   if (
     pnpmMajor !== null &&
     pinnedPnpmMajor !== null &&
-    pnpmMajor !== pinnedPnpmMajor
+    pnpmMajor < pinnedPnpmMajor
   ) {
     if (!(await detectNpm(execa))) {
       throw new Error(

@@ -27,7 +27,7 @@ var engines = {
 };
 var packageManager = "pnpm@10.26.2";
 var bin = {
-	pake: "dist/cli.js"
+	pakex: "dist/cli.js"
 };
 var repository = {
 	type: "git",
@@ -956,7 +956,7 @@ async function detectPackageManager() {
     const pinnedPnpmMajor = getPinnedPnpmMajorVersion();
     if (pnpmMajor !== null &&
         pinnedPnpmMajor !== null &&
-        pnpmMajor !== pinnedPnpmMajor) {
+        pnpmMajor < pinnedPnpmMajor) {
         if (!(await detectNpm(execa))) {
             throw new Error(`Detected pnpm ${normalizedPnpmVersion}, but Pake is pinned to ${packageJson.packageManager}. Install npm so Pake can fall back, or use pnpm ${pinnedPnpmMajor}.x to match the project pin.`);
         }
