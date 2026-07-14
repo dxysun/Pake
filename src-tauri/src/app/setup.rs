@@ -94,8 +94,16 @@ pub fn set_system_tray(
     let resolved_icon = if tray_icon_path.is_empty() {
         app.default_window_icon().cloned()
     } else {
-        tauri::image::Image::from_path(tray_icon_path)
+        // Resolve relative path via the app's resource directory (bundled assets)
+        let resource_icon = app
+            .path()
+            .resource_dir()
             .ok()
+            .map(|dir| dir.join(tray_icon_path))
+            .and_then(|p| tauri::image::Image::from_path(&p).ok());
+
+        resource_icon
+            .or_else(|| tauri::image::Image::from_path(tray_icon_path).ok())
             .or_else(|| app.default_window_icon().cloned())
     };
 

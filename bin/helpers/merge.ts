@@ -376,6 +376,16 @@ async function mergeIcons(
       id: 'pake-tray',
     };
   }
+
+  // Include tray icon in bundled resources so it's accessible at runtime
+  if (tauriConf.pake.system_tray_path) {
+    if (!tauriConf.bundle.resources) {
+      tauriConf.bundle.resources = [];
+    }
+    if (!tauriConf.bundle.resources.includes(tauriConf.pake.system_tray_path)) {
+      tauriConf.bundle.resources.push(tauriConf.pake.system_tray_path);
+    }
+  }
 }
 
 async function injectCustomCode(
