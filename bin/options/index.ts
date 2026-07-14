@@ -97,8 +97,14 @@ export default async function handleOptions(
     appOptions.bundle = true;
   }
 
+  // Save original icon path before handleIcon processes it
+  // This is needed for tray icon generation in mergeIcons
+  const originalIconPath = appOptions.icon;
   const iconPath = await handleIcon(appOptions, url);
   appOptions.icon = iconPath || '';
+  if (originalIconPath) {
+    (appOptions as any)._originalIconPath = originalIconPath;
+  }
 
   return appOptions;
 }

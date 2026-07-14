@@ -3,6 +3,7 @@ import fsExtra from 'fs-extra';
 
 import combineFiles from '@/utils/combine';
 import logger from '@/options/logger';
+import { handleIcon } from '@/options/icon';
 import {
   generateSafeFilename,
   generateIdentifierSafeName,
@@ -96,11 +97,9 @@ async function copyTemplateConfigs(): Promise<void> {
     sourceFiles.map(async (file) => {
       const sourcePath = path.join(srcTauriDir, file);
       const destPath = path.join(tauriConfigDirectory, file);
-      if (
-        (await fsExtra.pathExists(sourcePath)) &&
-        !(await fsExtra.pathExists(destPath))
-      ) {
-        await fsExtra.copy(sourcePath, destPath);
+      if (await fsExtra.pathExists(sourcePath)) {
+        // Always overwrite to ensure clean config state for each build
+        await fsExtra.copy(sourcePath, destPath, { overwrite: true });
       }
     }),
   );
@@ -289,64 +288,94 @@ async function mergeIcons(
   };
 
   const iconInfo = platformIconMap[platform];
-  const resolvedIconPath = options.icon ? path.resolve(options.icon) : null;
-  const exists =
-    resolvedIconPath && (await fsExtra.pathExists(resolvedIconPath));
+  // Use original icon path for tray PNG generation (before handleIcon converts it)
+  const originalIconPath = (options as any)._originalIconPath || options.icon;
+  const resolvedIconPath = originalIconPath ? path.resolve(originalIconPath) : null;
+  const exists = resolvedIconPath && (await fsExtra.pathExists(resolvedIconPath));
 
-  if (exists) {
-    let updateIconPath = true;
-    const customIconExt = path.extname(resolvedIconPath).toLowerCase();
-
-    if (customIconExt !== iconInfo.fileExt) {
-      updateIconPath = false;
-      logger.warn(`✼ ${iconInfo.message}, but you give ${customIconExt}`);
-      tauriConf.bundle.icon = [iconInfo.defaultIcon];
-    } else {
-      const iconPath = path.join(npmDirectory, 'src-tauri/', iconInfo.path);
-      tauriConf.bundle.resources = [iconInfo.path];
-
-      const absoluteDestPath = path.resolve(iconPath);
-      if (resolvedIconPath !== absoluteDestPath) {
-        try {
-          await fsExtra.copy(resolvedIconPath, iconPath);
-        } catch (error) {
-          if (
-            !(
-              error instanceof Error &&
-              error.message.includes(
-                'Source and destination must not be the same',
-              )
-            )
-          ) {
-            throw error;
-          }
-        }
+  if (exists && options.icon) {
+    // For macOS tray icon, create PNG from the original input file first
+    // (before handleIcon converts it to ICNS which sharp can't read)
+    let trayPngPath: string | null = null;
+    if (platform === 'darwin' && resolvedIconPath) {
+      trayPngPath = `png/${safeAppName}_tray.png`;
+      const trayPngFullPath = path.join(npmDirectory, 'src-tauri', trayPngPath);
+      try {
+        await fsExtra.ensureDir(path.dirname(trayPngFullPath));
+        const sharp = (await import('sharp')).default;
+        await sharp(resolvedIconPath)
+          .resize(256, 256, { fit: 'contain' })
+          .ensureAlpha()
+          .png()
+          .toFile(trayPngFullPath);
+        logger.info(`✵ System tray icon created: ${trayPngPath}`);
+      } catch (error) {
+        logger.warn(`Failed to create tray PNG from input: ${error instanceof Error ? error.message : String(error)}`);
+        trayPngPath = null;
       }
     }
 
-    if (updateIconPath) {
-      tauriConf.bundle.icon = [iconInfo.path];
+    // Use handleIcon to process and convert the icon to platform-specific format
+    const processedIconPath = await handleIcon(options, tauriConf.pake.windows[0]?.url);
+    
+    if (processedIconPath && (await fsExtra.pathExists(processedIconPath))) {
+      const iconPath = path.join(npmDirectory, 'src-tauri/', iconInfo.path);
+      
+      try {
+        await fsExtra.ensureDir(path.dirname(iconPath));
+        await fsExtra.copy(processedIconPath, iconPath);
+        tauriConf.bundle.icon = [iconInfo.path];
+        tauriConf.bundle.resources = [iconInfo.path];
+        logger.info(`✵ Icon set to: ${iconInfo.path}`);
+      } catch (error) {
+        logger.warn(
+          `✼ Failed to copy icon: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        tauriConf.bundle.icon = [iconInfo.defaultIcon];
+      }
+
+      // Set tray icon path
+      if (platform === 'darwin') {
+        if (trayPngPath) {
+          tauriConf.pake.system_tray_path = trayPngPath;
+        } else {
+          // Fallback to default PNG for tray icon (ICNS is not supported for tray on macOS)
+          tauriConf.pake.system_tray_path = 'png/icon_512.png';
+        }
+      } else {
+        tauriConf.pake.system_tray_path = iconInfo.path;
+      }
     } else {
-      logger.warn(`✼ Icon will remain as default.`);
+      logger.warn('✼ Icon processing failed, using default icon.');
+      tauriConf.bundle.icon = [iconInfo.defaultIcon];
+      tauriConf.pake.system_tray_path = platform === 'darwin' ? 'png/icon_512.png' : iconInfo.defaultIcon;
     }
   } else {
-    logger.warn(
-      '✼ Custom icon path may be invalid, default icon will be used instead.',
-    );
+    // No custom icon specified, use default
     tauriConf.bundle.icon = [iconInfo.defaultIcon];
+    tauriConf.pake.system_tray_path = platform === 'darwin' ? 'png/icon_512.png' : iconInfo.defaultIcon;
   }
 
-  // Set tray icon path.
-  const defaultTrayIconPath =
-    platform === 'darwin' ? 'png/icon_512.png' : tauriConf.bundle.icon![0];
-  const trayIconPath = await resolveSystemTrayIconPath(
-    options.systemTrayIcon,
-    defaultTrayIconPath,
-    safeAppName,
-  );
+  // Handle --system-tray-icon if explicitly specified (overrides auto-generated tray icon)
+  if (options.systemTrayIcon) {
+    const appIconPath = tauriConf.bundle.icon![0];
+    const defaultTrayIconPath = platform === 'darwin' ? 'png/icon_512.png' : appIconPath;
+    const trayIconPath = await resolveSystemTrayIconPath(
+      options.systemTrayIcon,
+      defaultTrayIconPath,
+      safeAppName,
+    );
+    tauriConf.pake.system_tray_path = trayIconPath;
+  }
 
-  tauriConf.pake.system_tray_path = trayIconPath;
-  delete tauriConf.app.trayIcon;
+  // Set Tauri v2 tray icon configuration (required for tray icon to work)
+  if (tauriConf.pake.system_tray && tauriConf.pake.system_tray_path) {
+    tauriConf.app.trayIcon = {
+      iconPath: tauriConf.pake.system_tray_path,
+      iconAsTemplate: platform === 'darwin',
+      id: 'pake-tray',
+    };
+  }
 }
 
 async function injectCustomCode(

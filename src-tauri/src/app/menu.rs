@@ -225,6 +225,16 @@ fn help_menu(app: &AppHandle<Wry>, title: &str) -> tauri::Result<Submenu<Wry>> {
 }
 
 pub fn handle_menu_click(app_handle: &AppHandle, id: &str) {
+    let window = app_handle
+        .webview_windows()
+        .into_iter()
+        .find(|(_, w)| w.is_focused().unwrap_or(false))
+        .map(|(_, w)| w)
+        .or_else(|| app_handle.get_webview_window("pake"));
+    let Some(window) = window else {
+        return;
+    };
+
     match id {
         "new_window" => {
             open_additional_window_safe(app_handle);
@@ -235,87 +245,58 @@ pub fn handle_menu_click(app_handle: &AppHandle, id: &str) {
                 .open_url("https://github.com/tw93/Pake", None::<&str>);
         }
         "reload" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("window.location.reload()");
-            }
+            let _ = window.eval("window.location.reload()");
         }
-        "toggle_devtools" => {
-            #[cfg(debug_assertions)] // Only allow in debug builds
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                if window.is_devtools_open() {
-                    window.close_devtools();
-                } else {
-                    window.open_devtools();
-                }
+        "toggle_devtools" =>
+        {
+            #[cfg(debug_assertions)]
+            if window.is_devtools_open() {
+                window.close_devtools();
+            } else {
+                window.open_devtools();
             }
         }
         "zoom_in" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("zoomIn()");
-            }
+            let _ = window.eval("zoomIn()");
         }
         "zoom_out" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("zoomOut()");
-            }
+            let _ = window.eval("zoomOut()");
         }
         "zoom_reset" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("setZoom('100%')");
-            }
+            let _ = window.eval("setZoom('100%')");
         }
         "go_back" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("window.history.back()");
-            }
+            let _ = window.eval("window.history.back()");
         }
         "go_forward" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("window.history.forward()");
-            }
+            let _ = window.eval("window.history.forward()");
         }
         "go_home" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("window.location.href = window.pakeConfig.url");
-            }
+            let _ = window.eval("window.location.href = window.pakeConfig.url");
         }
         "copy_url" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("navigator.clipboard.writeText(window.location.href)");
-            }
+            let _ = window.eval("navigator.clipboard.writeText(window.location.href)");
         }
         "paste_and_match_style" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("triggerPasteAsPlainText()");
-            }
+            let _ = window.eval("triggerPasteAsPlainText()");
         }
         "find" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("window.pakeFind?.open()");
-            }
+            let _ = window.eval("window.pakeFind?.open()");
         }
         "find_next" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("window.pakeFind?.next()");
-            }
+            let _ = window.eval("window.pakeFind?.next()");
         }
         "find_previous" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let _ = window.eval("window.pakeFind?.previous()");
-            }
+            let _ = window.eval("window.pakeFind?.previous()");
         }
         "clear_cache_restart" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                if window.clear_all_browsing_data().is_ok() {
-                    app_handle.restart();
-                }
+            if window.clear_all_browsing_data().is_ok() {
+                app_handle.restart();
             }
         }
         "always_on_top" => {
-            if let Some(window) = app_handle.get_webview_window("pake") {
-                let is_on_top = window.is_always_on_top().unwrap_or(false);
-                let _ = window.set_always_on_top(!is_on_top);
-            }
+            let is_on_top = window.is_always_on_top().unwrap_or(false);
+            let _ = window.set_always_on_top(!is_on_top);
         }
         _ => {}
     }
