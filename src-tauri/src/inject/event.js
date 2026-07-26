@@ -650,10 +650,16 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    // Convert protocol-relative URLs (//example.com) to absolute URLs
+    let absoluteUrl = url;
+    if (url && url.startsWith('//')) {
+      absoluteUrl = window.location.protocol + url;
+    }
+
     invoke("plugin:shell|open", {
-      path: url,
+      path: absoluteUrl,
     }).catch((error) => {
-      console.error("Failed to open URL with shell:", url, error);
+      console.error("Failed to open URL with shell:", absoluteUrl, error);
     });
   };
 
@@ -713,25 +719,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const absoluteUrl = hrefUrl.href;
       let filename = anchorElement.download || getFilenameFromUrl(absoluteUrl);
 
-      // Keep OAuth/authentication flows inside the app. Without --new-window,
-      // navigate in place so the SSO redirect chain and callback stay in the
-      // webview instead of falling through to the system browser.
+      // Keep OAuth/authentication flows inside the app to prevent WKWebView crashes.
+      // WKWebView's SOAuthorizationCoordinator can crash when on_new_window is registered.
+      // Always navigate auth URLs in the current window.
       if (window.isAuthLink(absoluteUrl)) {
         console.log("[Pake] Handling OAuth navigation in-app:", absoluteUrl);
         e.preventDefault();
         e.stopImmediatePropagation();
-
-        if (window.pakeConfig?.new_window) {
-          openAuthNavigation(
-            originalWindowOpen,
-            absoluteUrl,
-            "_blank",
-            "width=1200,height=800,scrollbars=yes,resizable=yes",
-          );
-        } else {
-          window.location.href = absoluteUrl;
-        }
-
+        window.location.href = absoluteUrl;
         return;
       }
 
@@ -759,6 +754,20 @@ document.addEventListener("DOMContentLoaded", () => {
           // the click, the default _self navigation keeps it inside the app.
           if (!window.pakeConfig?.new_window) {
             anchorElement.target = "_self";
+            return;
+          }
+
+          // When --new-window is enabled, prevent WKWebView from handling the
+          // click directly (which can crash on relative URLs or hash fragments).
+          // On macOS, on_new_window is disabled to prevent WKWebView crashes,
+          // so we navigate in the current window instead.
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          const isMacOS = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+          if (isMacOS) {
+            window.location.href = absoluteUrl;
+          } else {
+            window.open(absoluteUrl, '_blank', 'scrollbars=yes,resizable=yes');
           }
           return;
         }
@@ -828,6 +837,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Rewrite the window.open function.
   const originalWindowOpen = window.open;
   window.open = function (url, name, specs) {
+    // Block empty URLs immediately to prevent WKWebView crashes
+    if (!url || url === '' || url === 'about:blank') {
+      console.warn('[Pake] Blocked window.open with empty URL');
+      return null;
+    }
+
     const normalizedUrl = normalizeAnchorHref(url);
     if (normalizedUrl.startsWith("#")) {
       window.location.href = new URL(normalizedUrl, window.location.href).href;
@@ -838,21 +853,26 @@ document.addEventListener("DOMContentLoaded", () => {
       return originalWindowOpen.call(window, url, name, specs);
     }
 
-    // Avoid macOS WebKit auth-popup crashes by navigating auth URLs in-place.
-    if (window.isAuthPopup(url, name)) {
-      try {
-        const baseUrl = window.location.origin + window.location.pathname;
-        const absoluteUrl = new URL(url, baseUrl).href;
-        return openAuthNavigation(originalWindowOpen, absoluteUrl, name, specs);
-      } catch (error) {
-        return openAuthNavigation(originalWindowOpen, url, name, specs);
-      }
-    }
-
     try {
-      const baseUrl = window.location.origin + window.location.pathname;
+      // Parse URL with current page as base to handle protocol-relative URLs
+      // (e.g., "//gitlab.pdd.net/path" -> "https://gitlab.pdd.net/path")
+      const baseUrl = window.location.href;
       const hrefUrl = new URL(url, baseUrl);
       const absoluteUrl = hrefUrl.href;
+
+      // Validate the parsed URL
+      if (!absoluteUrl || absoluteUrl === 'about:blank') {
+        console.warn('[Pake] Blocked window.open with invalid URL:', url);
+        return null;
+      }
+
+      // Handle OAuth/authentication URLs in the current window to prevent
+      // WKWebView SOAuthorizationCoordinator crashes when on_new_window is registered.
+      if (window.isAuthLink(absoluteUrl) || window.isAuthPopup(url, name)) {
+        console.log('[Pake] Handling auth window.open in current window:', absoluteUrl);
+        window.location.href = absoluteUrl;
+        return window;
+      }
 
       if (!isInternalUrl(absoluteUrl)) {
         if (forceInternalNavigation) {
@@ -863,17 +883,20 @@ document.addEventListener("DOMContentLoaded", () => {
         return null;
       }
 
-      // With --new-window the native handler opens an in-app window; without it,
-      // originalWindowOpen would route the internal target to the system browser
-      // and strand SSO callbacks, so navigate in place instead.
-      if (!window.pakeConfig?.new_window) {
+      // On macOS, the on_new_window handler is disabled to prevent WKWebView
+      // SOAuthorizationCoordinator crashes. Always navigate in the current window.
+      // On other platforms, --new-window uses the Rust handler for in-app windows.
+      const isMacOS = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+      if (isMacOS || !window.pakeConfig?.new_window) {
         window.location.href = absoluteUrl;
         return window;
       }
 
       return originalWindowOpen.call(window, absoluteUrl, name, specs);
     } catch (error) {
-      return originalWindowOpen.call(window, url, name, specs);
+      // If URL parsing fails, block the window to prevent crashes
+      console.warn('[Pake] Blocked window.open with invalid URL:', url, error);
+      return null;
     }
   };
 

@@ -9,9 +9,12 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use tauri::{
-    webview::{DownloadEvent, NewWindowFeatures, NewWindowResponse},
+    webview::DownloadEvent,
     AppHandle, Config, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+
+#[cfg(not(target_os = "macos"))]
+use tauri::webview::{NewWindowFeatures, NewWindowResponse};
 
 use tauri::Theme;
 
@@ -56,6 +59,7 @@ impl MultiWindowState {
         format!("pake-{index}")
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn is_menu_creating_window(&self) -> bool {
         self.menu_creating_window.load(Ordering::SeqCst)
     }
@@ -79,9 +83,11 @@ struct WindowBuildOptions<'a> {
     label: &'a str,
     url: WebviewUrl,
     visible: bool,
+    #[cfg(not(target_os = "macos"))]
     new_window_features: Option<NewWindowFeatures>,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn open_requested_window(
     app: &AppHandle,
     config: &PakeConfig,
@@ -89,7 +95,15 @@ fn open_requested_window(
     target_url: Url,
     features: NewWindowFeatures,
 ) -> tauri::Result<WebviewWindow> {
-    let state = app.state::<MultiWindowState>();
+    // Use try_state to prevent panic if state was dropped
+    let Some(state) = app.try_state::<MultiWindowState>() else {
+        eprintln!("[Pake] MultiWindowState not found in open_requested_window");
+        return Err(tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "MultiWindowState not available",
+        )));
+    };
+
     let label = state.next_window_label();
     let window = build_window(
         app,
@@ -103,8 +117,11 @@ fn open_requested_window(
         },
     )?;
 
-    let title = target_url.host_str().unwrap_or(target_url.as_str());
-    let _ = window.set_title(title);
+    let title = target_url
+        .host_str()
+        .unwrap_or_else(|| target_url.as_str())
+        .to_string();
+    let _ = window.set_title(&title);
     let _ = window.set_focus();
 
     Ok(window)
@@ -197,6 +214,7 @@ fn build_window_with_label(
             label,
             url,
             visible: false,
+            #[cfg(not(target_os = "macos"))]
             new_window_features: None,
         },
     )
@@ -212,6 +230,7 @@ fn build_window(
         label,
         url,
         visible,
+        #[cfg(not(target_os = "macos"))]
         new_window_features,
     } = opts;
     let package_name = tauri_config
@@ -295,20 +314,29 @@ fn build_window(
         window_builder = window_builder.disable_drag_drop_handler();
     }
 
-    let allow_js_new_window = window_config.new_window;
+    // On macOS, registering on_new_window handler conflicts with WKWebView's internal
+    // SOAuthorizationCoordinator and causes crashes. Instead, we rely on JS-side
+    // window.open handling which navigates to the URL in the current window.
+    // See: https://github.com/tauri-apps/tauri/issues/xxxx
+    #[cfg(not(target_os = "macos"))]
     if allow_js_new_window || config.multi_window {
         let app_handle = app.clone();
         let popup_config = config.clone();
         let popup_tauri_config = tauri_config.clone();
         window_builder = window_builder.on_new_window(move |target_url, features| {
+            // Ensure MultiWindowState exists before proceeding. If state is missing,
+            // deny the request to prevent panic in open_requested_window.
+            let Some(state) = app_handle.try_state::<MultiWindowState>() else {
+                eprintln!("[Pake] MultiWindowState not found, denying new window");
+                return NewWindowResponse::Deny;
+            };
+
             // Block WKWebView's native Cmd+N/Ctrl+N from creating duplicate
             // windows when the menu handler is already creating one. The flag
             // is set in open_additional_window_safe and cleared after 200ms.
-            if let Some(state) = app_handle.try_state::<MultiWindowState>() {
-                if state.is_menu_creating_window() {
-                    eprintln!("[Pake] Blocked native new-window during menu creation");
-                    return NewWindowResponse::Deny;
-                }
+            if state.is_menu_creating_window() {
+                eprintln!("[Pake] Blocked native new-window during menu creation");
+                return NewWindowResponse::Deny;
             }
 
             // Block Cmd+N / Ctrl+N from opening extra windows via WKWebView's
@@ -477,27 +505,12 @@ fn build_window(
         println!("Proxy configured: {}", config.proxy_url);
     }
 
+    #[cfg(not(target_os = "macos"))]
     if let Some(features) = new_window_features {
-        // Reuse only opener-provided position/size on macOS; sharing the opener
+        // Reuse only opener-provided position/size; sharing the opener
         // WKWebViewConfiguration triggers duplicate WKScriptMessageHandler
-        // registrations on macOS 26+ and crashes the app (issue #1194).
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(position) = features.position() {
-                window_builder = window_builder.position(position.x, position.y);
-            }
-
-            if let Some(size) = features.size() {
-                window_builder = window_builder.inner_size(size.width, size.height);
-            }
-
-            window_builder = window_builder.focused(true);
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            window_builder = window_builder.window_features(features).focused(true);
-        }
+        // registrations and crashes.
+        window_builder = window_builder.window_features(features).focused(true);
     }
 
     // Capture webview-initiated downloads (blob:, data:, Content-Disposition,
